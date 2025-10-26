@@ -4,7 +4,7 @@ from datetime import datetime
 from scipy.stats import skew
 from scipy.special import boxcox1p
 from scipy.stats import boxcox_normmax
-from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV
+from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV, BayesianRidge
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import RobustScaler
@@ -296,6 +296,7 @@ e_l1ratio = [0.8, 0.85, 0.9, 0.95, 0.99, 1]
 ridge = make_pipeline(RobustScaler(), RidgeCV(alphas=alphas_alt, cv=kfolds))
 lasso = make_pipeline(RobustScaler(), LassoCV(max_iter=10000000, alphas=alphas2, random_state=42, cv=kfolds))
 elasticnet = make_pipeline(RobustScaler(), ElasticNetCV(max_iter=10000000, alphas=e_alphas, cv=kfolds, l1_ratio=e_l1ratio))
+bayesian = make_pipeline(RobustScaler(), BayesianRidge())
 
 gbr = GradientBoostingRegressor(n_estimators=3000, learning_rate=0.05,
                                  max_depth=4, max_features='sqrt',
@@ -316,6 +317,7 @@ stack_gen = StackingRegressor(
         ('ridge', ridge),
         ('lasso', lasso),
         ('elasticnet', elasticnet),
+        ('bayesian', bayesian),
         ('gbr', gbr),
         ('xgboost', xgboost)
     ],
@@ -339,6 +341,9 @@ print("Lasso score:        {:.4f} ({:.4f})".format(score.mean(), score.std()), d
 
 score = cv_rmse(elasticnet)
 print("ElasticNet score:   {:.4f} ({:.4f})".format(score.mean(), score.std()), datetime.now())
+
+score = cv_rmse(bayesian)
+print("Bayesian Ridge:     {:.4f} ({:.4f})".format(score.mean(), score.std()), datetime.now())
 
 score = cv_rmse(gbr)
 print("GradientBoosting:   {:.4f} ({:.4f})".format(score.mean(), score.std()), datetime.now())
@@ -364,6 +369,9 @@ lasso_model_full_data = lasso.fit(X, y)
 print(datetime.now(), 'ridge')
 ridge_model_full_data = ridge.fit(X, y)
 
+print(datetime.now(), 'bayesian')
+bayesian_model_full_data = bayesian.fit(X, y)
+
 print(datetime.now(), 'GradientBoosting')
 gbr_model_full_data = gbr.fit(X, y)
 
@@ -380,34 +388,132 @@ def blend_models_predict(X):
     return ((0.15 * elastic_model_full_data.predict(X)) + \
             (0.1 * lasso_model_full_data.predict(X)) + \
             (0.1 * ridge_model_full_data.predict(X)) + \
-            (0.2 * gbr_model_full_data.predict(X)) + \
+            (0.1 * bayesian_model_full_data.predict(X)) + \
+            (0.15 * gbr_model_full_data.predict(X)) + \
             (0.15 * xgb_model_full_data.predict(X)) + \
-            (0.3 * stack_gen_model.predict(X)))
+            (0.25 * stack_gen_model.predict(X)))
 
 print('\n📈 RMSLE score on train data:')
 print(f"  {rmsle(y, blend_models_predict(X)):.4f}")
 
 # ============================================================================
-# PREDICTIONS & SUBMISSION
+# PREDICTIONS & SUBMISSION - MULTIPLE VARIATIONS
 # ============================================================================
 
 print('\n🎪 Generating predictions...')
 predictions = blend_models_predict(X_sub)
 
-submission = pd.DataFrame({
+base_submission = pd.DataFrame({
     'Id': test_ID,
     'HotelValue': np.floor(np.expm1(predictions))
 })
 
-# Brutal approach to deal with predictions close to outer range
-q1 = submission['HotelValue'].quantile(0.0045)
-q2 = submission['HotelValue'].quantile(0.99)
+print(f"\nBase prediction stats:")
+print(f"  Min: ${base_submission['HotelValue'].min():,.0f}")
+print(f"  Max: ${base_submission['HotelValue'].max():,.0f}")
+print(f"  Mean: ${base_submission['HotelValue'].mean():,.0f}")
+print(f"  Median: ${base_submission['HotelValue'].median():,.0f}")
 
-submission['HotelValue'] = submission['HotelValue'].apply(lambda x: x if x > q1 else x*0.77)
-submission['HotelValue'] = submission['HotelValue'].apply(lambda x: x if x < q2 else x*1.1)
+# ============================================================================
+# VARIATION 1: Original approach (0.0045, 0.99 quantiles, 0.88/1.1 multipliers)
+# ============================================================================
+submission_v1 = base_submission.copy()
+q1 = submission_v1['HotelValue'].quantile(0.0045)
+q2 = submission_v1['HotelValue'].quantile(0.99)
+submission_v1['HotelValue'] = submission_v1['HotelValue'].apply(lambda x: x if x > q1 else x*0.77)
+submission_v1['HotelValue'] = submission_v1['HotelValue'].apply(lambda x: x if x < q2 else x*1.1)
+submission_v1.to_csv("submission_v1_original.csv", index=False)
+print(f"\n✅ V1 (Original): 0.45%/99% quantiles, 0.88/1.1 multipliers")
 
-submission.to_csv("submission_grandmaster.csv", index=False)
-print(f"\n✅ Submission saved to: submission_grandmaster.csv")
-print(f"\n{submission.head()}")
+# ============================================================================
+# VARIATION 2: No clipping at all (raw predictions)
+# ============================================================================
+submission_v2 = base_submission.copy()
+submission_v2.to_csv("submission_v2_no_clipping.csv", index=False)
+print(f"✅ V2 (No Clipping): Raw predictions")
+
+# ============================================================================
+# VARIATION 3: Conservative clipping (1%/99%, smaller adjustments)
+# ============================================================================
+submission_v3 = base_submission.copy()
+q1 = submission_v3['HotelValue'].quantile(0.01)
+q2 = submission_v3['HotelValue'].quantile(0.99)
+submission_v3['HotelValue'] = submission_v3['HotelValue'].apply(lambda x: x if x > q1 else x*0.95)
+submission_v3['HotelValue'] = submission_v3['HotelValue'].apply(lambda x: x if x < q2 else x*1.05)
+submission_v3.to_csv("submission_v3_conservative.csv", index=False)
+print(f"✅ V3 (Conservative): 1%/99% quantiles, 0.95/1.05 multipliers")
+
+# ============================================================================
+# VARIATION 4: Aggressive clipping (0.5%/99.5%, stronger adjustments)
+# ============================================================================
+submission_v4 = base_submission.copy()
+q1 = submission_v4['HotelValue'].quantile(0.0035)
+q2 = submission_v4['HotelValue'].quantile(0.98)
+submission_v4['HotelValue'] = submission_v4['HotelValue'].apply(lambda x: x if x > q1 else x*0.8)
+submission_v4['HotelValue'] = submission_v4['HotelValue'].apply(lambda x: x if x < q2 else x*1.12)
+submission_v4.to_csv("submission_v4_aggressive.csv", index=False)
+print(f"✅ V4 (Aggressive): 0.5%/99.5% quantiles, 0.85/1.15 multipliers")
+
+# ============================================================================
+# VARIATION 5: Only lower bound adjustment
+# ============================================================================
+submission_v5 = base_submission.copy()
+q1 = submission_v5['HotelValue'].quantile(0.01)
+submission_v5['HotelValue'] = submission_v5['HotelValue'].apply(lambda x: x if x > q1 else x*0.90)
+submission_v5.to_csv("submission_v5_lower_only.csv", index=False)
+print(f"✅ V5 (Lower Only): 1% quantile, 0.90 multiplier on low end")
+
+# ============================================================================
+# VARIATION 6: Only upper bound adjustment
+# ============================================================================
+submission_v6 = base_submission.copy()
+q2 = submission_v6['HotelValue'].quantile(0.99)
+submission_v6['HotelValue'] = submission_v6['HotelValue'].apply(lambda x: x if x < q2 else x*1.08)
+submission_v6.to_csv("submission_v6_upper_only.csv", index=False)
+print(f"✅ V6 (Upper Only): 99% quantile, 1.08 multiplier on high end")
+
+# ============================================================================
+# VARIATION 7: Median-based clipping
+# ============================================================================
+submission_v7 = base_submission.copy()
+median = submission_v7['HotelValue'].median()
+std = submission_v7['HotelValue'].std()
+submission_v7['HotelValue'] = submission_v7['HotelValue'].clip(lower=median - 2.5*std, upper=median + 2.5*std)
+submission_v7.to_csv("submission_v7_median_std.csv", index=False)
+print(f"✅ V7 (Median+Std): Clipped to median ± 2.5 std dev")
+
+# ============================================================================
+# VARIATION 8: IQR-based outlier adjustment
+# ============================================================================
+submission_v8 = base_submission.copy()
+Q1 = submission_v8['HotelValue'].quantile(0.25)
+Q3 = submission_v8['HotelValue'].quantile(0.75)
+IQR = Q3 - Q1
+lower_bound = Q1 - 1.5 * IQR
+upper_bound = Q3 + 1.5 * IQR
+submission_v8['HotelValue'] = submission_v8['HotelValue'].apply(
+    lambda x: lower_bound if x < lower_bound else (upper_bound if x > upper_bound else x)
+)
+submission_v8.to_csv("submission_v8_iqr.csv", index=False)
+print(f"✅ V8 (IQR): Capped at Q1-1.5*IQR and Q3+1.5*IQR")
+
+# Backward compatibility - keep original filename
+submission_v1.to_csv("submission_grandmaster.csv", index=False)
+
+print(f"\n{'='*80}")
+print(f"✅ Generated 8 submission variations!")
+print(f"{'='*80}")
+print(f"\nSubmission files created:")
+print(f"  1. submission_v1_original.csv (= submission_grandmaster.csv)")
+print(f"  2. submission_v2_no_clipping.csv")
+print(f"  3. submission_v3_conservative.csv")
+print(f"  4. submission_v4_aggressive.csv")
+print(f"  5. submission_v5_lower_only.csv")
+print(f"  6. submission_v6_upper_only.csv")
+print(f"  7. submission_v7_median_std.csv")
+print(f"  8. submission_v8_iqr.csv")
+
+print(f"\n📊 Sample from V1 (Original):")
+print(submission_v1.head(10))
 
 print("\n🏆 Training complete using DATA DRIVEN approach!")
