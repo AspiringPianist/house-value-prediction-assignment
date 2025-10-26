@@ -1,6 +1,8 @@
 # house-value-prediction-assignment
 Tried all methods of Linear Regression and Ensemble Learning from ML Course Part - 1
 
+Summarized report at `hotel_value_chicken_biryani.pdf`
+
 Detailed report and Model Summary is available in Exploratory Data Analysis Notebook / PDF (`exploratory_data_analysis.ipynb`) 
 
 Data was noticeable skewed for some columns, so Box-Cox Transformation was applied.  
