@@ -8,7 +8,7 @@ Data was noticeable skewed for some columns, so Box-Cox Transformation was appli
 
 BoxCox finds the **optimal transformation parameter (λ)** for each feature individually, rather than blindly applying log to everything.
 
-**The BoxCox Family of Transformations:**
+The BoxCox Family of Transformations:
 $$
 y(\lambda) = 
 \begin{cases}
